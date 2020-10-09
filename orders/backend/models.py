@@ -3,6 +3,7 @@ from django.contrib.auth.base_user import BaseUserManager
 from django.contrib.auth.models import AbstractUser
 from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.utils.translation import ugettext
+from django_rest_passwordreset.tokens import get_token_generator
 
 STATE_CHOICES = (
     ('basket', 'Статус корзины'),
@@ -73,10 +74,10 @@ class User(AbstractUser):
     username = models.CharField(
         ugettext('username'),
         max_length=150,
-        help_text=ugettext('Username required. Username must be 150 characters or fewer. Letters, digits and @/./+/-/_ only.'),
+        help_text=ugettext('Требуется имя пользователя. Буквы, цифры и @/./+/-/_.'),
         validators=[username_validator],
         error_messages={
-            'unique': ugettext('Username aleready exists'),
+            'unique': ugettext('Пользователь с таким именем уже существует'),
         },
         unique=True,
     )
@@ -236,3 +237,40 @@ class Contact(models.Model):
 
     def __str__(self):
         return f'{self.city} {self.street} {self.house}'
+
+
+class ConfirmEmailToken(models.Model):
+    class Meta:
+        verbose_name: 'Токен для подтверждения Email'
+        verbose_name_plural: 'Токены для подтверждения Email'
+
+    @staticmethod
+    def generate_key():
+        return get_token_generator().generate_token()
+
+    user = models.ForeignKey(
+        User, 
+        related_name='confirm_email_tokens',
+        on_delete=models.CASCADE,
+        verbose_name=ugettext('The User which is associated to this password reset token')
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True, 
+        verbose_name=ugettext('Time when token was generated')
+    )
+
+    key = models.CharField(
+        ugettext('Key'),
+        max_length=64,
+        db_index=True,
+        unique=True
+    )
+
+    def save(self, *args, **kwargs):
+        if not self.key:
+            self.key = self.generate_key()
+        return super(ConfirmEmailToken, self).save(*args, **kwargs)
+
+    def __str__(self):
+        return "Password reset token for user {user}".format(user=self.user)
