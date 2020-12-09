@@ -103,6 +103,7 @@ class Shop(models.Model):
     name = models.CharField(max_length=50, verbose_name='Название')
     url = models.URLField(verbose_name='Ссылка', null=True, blank=True)
     filename = models.CharField(max_length=100)
+    state = models.BooleanField(verbose_name='Принимает заказы?', default=True)
 
     class Meta:
         verbose_name = 'Магазин'
@@ -128,6 +129,7 @@ class Category(models.Model):
 class Product(models.Model):
     category = models.ForeignKey(Category, verbose_name='Категория', related_name='products', blank=True,
                                  on_delete=models.CASCADE)
+    name = models.CharField(max_length=50, verbose_name='Название', default=None)
 
     class Meta:
         verbose_name = 'Продукт'
@@ -147,6 +149,9 @@ class ProductInfo(models.Model):
     quantity = models.PositiveIntegerField(verbose_name='Количество')
     price = models.PositiveIntegerField(verbose_name='Цена')
     price_rrc = models.PositiveIntegerField(verbose_name='Рекомендуемая цена')
+
+    external_id = models.PositiveIntegerField(verbose_name='External id', default=None)
+    model = models.CharField(max_length=80, verbose_name='Модель', blank=True)
 
     class Meta:
         verbose_name = 'Информация о продукте'
@@ -174,7 +179,7 @@ class ProductParameter(models.Model):
                                 on_delete=models.CASCADE)
     parameter = models.ForeignKey(Parameter, verbose_name='Параметр', related_name='product_parameters', blank=True,
                                 on_delete=models.CASCADE)
-    value = models.BooleanField(default=False)
+    value = models.CharField(max_length=50, verbose_name='Значение')
 
     class Meta:
         verbose_name = 'Параметр продукта'

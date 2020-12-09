@@ -1,8 +1,10 @@
 from django.shortcuts import render
 from rest_framework.views import APIView
+from rest_framework.generics import ListAPIView
 from django.http import JsonResponse
 from django.core.validators import URLValidator
 from django.core.exceptions import ValidationError
+from django.db.models import Q
 from yaml import load as load_yaml, Loader
 from requests import get
 from django.contrib.auth.password_validation import validate_password
@@ -14,13 +16,17 @@ from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
 
 
-from backend.models import Shop, Category, Product, ProductInfo, Parameter, ProductParameter, Order, OrderItem, \
-    Contact, ConfirmEmailToken
+from backend.models import Shop, Category, Product, ProductInfo, Parameter, \
+    ProductParameter, Order, OrderItem, Contact, ConfirmEmailToken
 
-from .serializers import UserSerializer
 from backend.signals import new_user_registered, new_order
+from .serializers import UserSerializer, CategorySerializer, ProductInfoSerializer
 
 from rest_framework.authentication import SessionAuthentication
+
+from .models import User, Shop
+
+from distutils.util import strtobool
 
 # Create your views here.
 
@@ -40,6 +46,7 @@ class RegisterAccount(APIView):
             if request.data['password'] is not None:
                 try:
                     validate_password(request.data['password'])
+                    print('try')
                 except Exception as password_error:
                     error_arr = []
                     for item in password_error:
@@ -55,8 +62,12 @@ class RegisterAccount(APIView):
                     if user_serializer.is_valid():
                         user = user_serializer.save()
                         user.set_password(request.data['password'])
+                       
                         user.save()
-                        new_user_registered.send(sender=self.__class__, user_id=user.id)
+
+                        # Signal. Crashes with 500 error
+                        # new_user_registered.send(sender=self.__class__, user_id=user.id)
+
                         return JsonResponse({'Status': True})
                     else:
                         return JsonResponse({
@@ -77,7 +88,7 @@ class RegisterAccount(APIView):
             return JsonResponse({
                 'Status': False,
                 'Errors': 'Oops!',
-            }, status=404) 
+            }, status=404)
 
 
 class ConfirmAccount(APIView):
@@ -93,7 +104,7 @@ class ConfirmAccount(APIView):
             else:
                 return JsonResponse({
                     'Status': False,
-                    'Errors': 'Invaild token or email'
+                    'Errors': 'Invalid token or email'
                 })
         return JsonResponse({
             'Status': False,
@@ -106,8 +117,8 @@ class LoginAccount(APIView):
     authentication_classes = (CsrfExemptSessionAuthentication,)
 
     def post(self, request, *args, **kwargs):
-        if {'email', 'password'}.issubset(request.data):
-            user = authenticate(username=request.data['email'], password=request.data['password'])
+        if {'username', 'password'}.issubset(request.data):
+            user = authenticate(username=request.data['username'], password=request.data['password'])
             if user is not None:
                 if user.is_active:
                     token, _ = Token.objects.get_or_create(user=user)
@@ -124,48 +135,101 @@ class LoginAccount(APIView):
             else:
                 return JsonResponse({
                     'Status': False,
-                    'Errors': 'Invalid username or password'
+                    'Errors': 'Invalid username or password',
+                    'user': user
                 })
         else:
             return JsonResponse({
                     'Status': False,
                     'Errors': 'Login failed'
                 }, status=403)
+
+
+
+class PartnerState(APIView):
+    authentication_classes = (CsrfExemptSessionAuthentication,)
+    """
+    Запрещает или разрешает прием заказов
+    """
+    def post(self, request, *args, **kwargs):
+
+        try:
+            user = Token.objects.get(key=request.headers['token']).user
+        except:
+            return JsonResponse({
+                'Status': False,
+                'Error': 'User which could be associated with that token doesn\'t exist'
+            }, status=403)
+
+        if user.type != 'shop':
+            return JsonResponse({
+                'Status': False,
+                'Error': 'This API is only for shops'
+            }, status=403)
+
+        try:
+            state = request.data['state']
+        except:
+            return JsonResponse({
+                'Status': False,
+                'Error': 'State value required'
+            }, status=404)
+        if state is None:
+            return JsonResponse({
+                'Status': False,
+                'Error': 'State value required'
+            }, status=404)
+
+        company_name = user.company
+        shop = Shop.objects.get(name=company_name)
+        shop.state = strtobool(request.data['state'])
+        shop.save()
+
+        return JsonResponse({'Status': True})
+
     def get(self, request, *args, **kwargs):
+        try:
+            user = Token.objects.get(key=request.headers['token']).user
+        except:
+            return JsonResponse({
+                'Status': False,
+                'Error': 'User which could be associated with that token doesn\'t exist'
+            }, status=403)
+
+        if user.type != 'shop':
+            return JsonResponse({
+                'Status': False,
+                'Error': 'This API is only for shops'
+            }, status=403)
+        
+        company_name = user.company
+        shop = Shop.objects.get(name=company_name)
+        
         return JsonResponse({
-            'Kek': False
+            'Shop': shop.name,
+            'State': shop.state
         })
 
 
-
-
-
-
-
-
-
-
-
-
-
-# class PartnerState(APIView)
-                    
-
 class PartnerUpdate(APIView):
+    authentication_classes = (CsrfExemptSessionAuthentication,)
     """
     Класс для обновления прайса от поставщика
     """
     def post(self, request, *args, **kwargs):
-        if not request.user.is_authenticated:
+
+        try:
+            user = Token.objects.get(key=request.headers['token']).user
+        except:
             return JsonResponse({
                 'Status': False,
-                'Error': 'User must be authenticated'
+                'Error': 'User which could be associated with that token doesn\'t exist'
             }, status=403)
         
-        if request.user.type != 'shop':
+        if user.type != 'shop':
             return JsonResponse({
                 'Status': False,
-                'Error': 'Only for shops'
+                'Error': 'This API is only for shops'
             }, status=403)
         
         url = request.data.get('url')
@@ -183,23 +247,23 @@ class PartnerUpdate(APIView):
 
                 data = load_yaml(stream, Loader=Loader)
 
-                shop, _ = Shop.objects.get_or_create(name=data['shop'], user_id=request.user.id)
+                shop, _ = Shop.objects.get_or_create(name=data['shop'])
                 for category in data['categories']:
                     category_object, _ = Category.objects.get_or_create(id=category['id'], name=category['name'])
-                    category_object.shops.add(shop.id)
+                    category_object.shop.add(shop.id)
                     category_object.save()
                 ProductInfo.objects.filter(shop_id=shop.id).delete()
                 for item in data['goods']:
                     product, _ = Product.objects.get_or_create(name=item['name'], category_id=item['category'])
 
                     product_info = ProductInfo.objects.create(product_id=product.id,
-                                                            #   external_id=item['id'],
-                                                            #   model=item['model'],
-                                                            shop_id=shop.id,
-                                                            name=item['name'],
-                                                            quantity=item['quantity'],
-                                                            price=item['price'],
-                                                            price_rrc=item['price_rrc'])
+                                                              external_id=item['id'],
+                                                              model=item['model'],
+                                                              shop_id=shop.id,
+                                                              name=item['name'],
+                                                              quantity=item['quantity'],
+                                                              price=item['price'],
+                                                              price_rrc=item['price_rrc'])
 
                     for name, value in item['parameters'].items():
                         parameter_object, _ = Parameter.objects.get_or_create(name=name)
@@ -213,8 +277,59 @@ class PartnerUpdate(APIView):
             'Status': False,
             'Error': 'Not all required arguments are filled'})
     
-    def get(self, request):
+
+class CategoryView(ListAPIView):
+    """
+    Список категорий
+    """
+    queryset = Category.objects.all()
+    serializer_class = CategorySerializer
+
+
+class ProductsList(APIView):
+    authentication_classes = (CsrfExemptSessionAuthentication,)
+    """
+    Получение списка товаров
+    """
+    def get(self, request, *args, **kwargs):
+        try:
+            user = Token.objects.get(key=request.headers['token']).user
+        except:
+            return JsonResponse({
+                'Status': False,
+                'Error': 'User which could be associated with that token doesn\'t exist'
+            }, status=403)
+
+        products = ProductInfo.objects.all()
+        serializer = ProductInfoSerializer(products, many=True)
+
         return JsonResponse({
-            "Status": True,
-            "Text": "Ok"
+            'Status': True,
+            'Data': serializer.data
+        })
+
+
+class ProductInfoView(APIView):
+    """
+    Поиск товара
+    """
+    def get(self, request, *args, **kwargs):
+        query = Q(shop__state=True)
+        category_id = request.query_params.get('category_id')
+        shop_id = request.query_params.get('shop_id')
+
+        if shop_id:
+            query = query & Q(shop_id=shop_id)
+        if category_id:
+            query = query & Q(product__category_id=category_id)
+
+        queryset = ProductInfo.objects.filter(query).select_related(
+            'shop', 'product__category').prefetch_related(
+            'product_parameters__parameter').distinct()
+
+        serializer = ProductInfoSerializer(queryset, many=True)
+
+        return JsonResponse({
+            'Status': True,
+            'Data': serializer.data
         })
